@@ -1,0 +1,6 @@
+{
+  "name": "vibe-talk",
+  "identifier": "com.example.vibetalk",
+  "version": "0.1.0",
+  "out": "build"
+}

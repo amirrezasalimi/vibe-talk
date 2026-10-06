@@ -1,0 +1,9 @@
+/build/
+/.mygo/
+mygo_windows_*.syso
+/runtime/*.dylib
+
+/runtime/*.cact
+/.cache/
+/runtime/.whistle-setup.*/
+/resources/runtime/
