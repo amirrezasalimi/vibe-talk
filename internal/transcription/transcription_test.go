@@ -78,6 +78,17 @@ func TestNativeFramingAndFlush(t *testing.T) {
 		t.Fatal(events)
 	}
 }
+func TestLowCPUFramingAndTail(t *testing.T) {
+	e := &testEngine{}
+	c := &testCapture{remaining: 64500}
+	err := runNativeSession(&nativeSession{chunkSamples: 32000}, "en",
+		func() (speechEngine, error) { return e, nil },
+		func() (audioCapture, error) { return c, nil }, func(Event) {})
+	if err != nil || !e.flushed || len(e.sizes) != 3 || e.sizes[0] != 32000 || e.sizes[1] != 32000 || e.sizes[2] != 500 {
+		t.Fatalf("%+v %v", e, err)
+	}
+}
+
 func TestCaptureErrorResetsEngine(t *testing.T) {
 	e := &testEngine{}
 	failure := errors.New("capture failed")

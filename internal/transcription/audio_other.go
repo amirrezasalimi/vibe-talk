@@ -4,6 +4,8 @@ package transcription
 
 import "errors"
 
+func startAudio(_ bool) (audioCapture, error) { return startSystemAudio() }
+
 func startSystemAudio() (audioCapture, error) {
 	return nil, errors.New("system audio capture requires macOS 13 or newer and a build with cgo enabled")
 }

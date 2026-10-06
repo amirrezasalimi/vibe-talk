@@ -9,6 +9,7 @@
 #include <pthread.h>
 #include <string.h>
 #include <stdio.h>
+#include <math.h>
 
 #define VT_RING_CAPACITY (16000 * 8)
 static NSString *const VTPermissionHelp = @"Screen/system-audio capture permission is required. Open System Settings > Privacy & Security > Screen Recording (or Screen & System Audio Recording), enable this executable or its launching terminal/app, then quit and relaunch that app. No microphone permission is needed.";
@@ -23,6 +24,9 @@ API_AVAILABLE(macos(13.0))
     pthread_mutex_t mutex;
     pthread_cond_t condition;
     float ring[VT_RING_CAPACITY];
+        float micRing[VT_RING_CAPACITY];
+        size_t micHead, micCount;
+        BOOL includeMicrophone;
     size_t head, count;
     BOOL ready, done;
     NSString *failure;
@@ -30,6 +34,9 @@ API_AVAILABLE(macos(13.0))
     dispatch_queue_t queue;
     SCStream *stream;
     AVAudioConverter *converter;
+        AVAudioConverter *micConverter;
+        AVAudioFormat *micSourceFormat;
+        BOOL processingMicrophone;
     AVAudioFormat *sourceFormat, *outputFormat;
     BOOL starting, stopping, stopIssued;
 }
@@ -72,13 +79,35 @@ API_AVAILABLE(macos(13.0))
 - (BOOL)emit:(AVAudioPCMBuffer *)pcm {
     size_t n = pcm.frameLength;
     float *samples = pcm.floatChannelData[0];
+    if (processingMicrophone) {
+        pthread_mutex_lock(&mutex);
+        // The system stream is the output clock. Bound microphone lead to
+        // 250 ms so independent capture clocks cannot create stale speech.
+        size_t capacity = 4000;
+        for (size_t i = 0; i < n; i++) {
+            if (micCount == capacity) { micHead = (micHead + 1) % VT_RING_CAPACITY; micCount--; }
+            micRing[(micHead + micCount) % VT_RING_CAPACITY] = samples[i];
+            micCount++;
+        }
+        pthread_mutex_unlock(&mutex);
+        return YES;
+    }
     pthread_mutex_lock(&mutex);
     if (n > VT_RING_CAPACITY - count) {
         pthread_mutex_unlock(&mutex);
         [self fail:@"System audio consumer stalled: the 8-second PCM queue is full. Capture stopped rather than silently dropping audio."];
         return NO;
     }
-    size_t tail = (head + count) % VT_RING_CAPACITY;
+    if (includeMicrophone) {
+            size_t mixed = MIN(n, micCount);
+            for (size_t i = 0; i < mixed; i++) {
+                float value = samples[i] + micRing[(micHead + i) % VT_RING_CAPACITY];
+                samples[i] = fmaxf(-1.0f, fminf(1.0f, value));
+            }
+            micHead = (micHead + mixed) % VT_RING_CAPACITY;
+            micCount -= mixed;
+        }
+        size_t tail = (head + count) % VT_RING_CAPACITY;
     size_t first = MIN(n, VT_RING_CAPACITY - tail);
     memcpy(ring + tail, samples, first * sizeof(float));
     memcpy(ring, samples + first, (n - first) * sizeof(float));
@@ -143,6 +172,11 @@ API_AVAILABLE(macos(13.0))
             [self finish];
             NSError *ignored = nil;
             [self->stream removeStreamOutput:self type:SCStreamOutputTypeAudio error:&ignored];
+                        if (self->includeMicrophone) {
+                            if (@available(macOS 15.0, *)) {
+                                [self->stream removeStreamOutput:self type:SCStreamOutputTypeMicrophone error:&ignored];
+                            }
+                        }
             self->stream = nil;
         });
     }];
@@ -184,6 +218,9 @@ API_AVAILABLE(macos(13.0))
                 SCContentFilter *filter = [[SCContentFilter alloc] initWithDisplay:display excludingApplications:@[] exceptingWindows:@[]];
                 SCStreamConfiguration *config = [SCStreamConfiguration new];
                 config.capturesAudio = YES;
+                                if (self->includeMicrophone) {
+                                    if (@available(macOS 15.0, *)) { config.captureMicrophone = YES; }
+                                }
                 config.excludesCurrentProcessAudio = YES;
                 config.sampleRate = 48000;
                 config.channelCount = 2;
@@ -197,7 +234,14 @@ API_AVAILABLE(macos(13.0))
                 if (![self->stream addStreamOutput:self type:SCStreamOutputTypeAudio sampleHandlerQueue:self->queue error:&addError]) {
                     [self fail:[self describeError:addError]]; return;
                 }
-                self->starting = YES;
+                if (self->includeMicrophone) {
+                                    if (@available(macOS 15.0, *)) {
+                                        if (![self->stream addStreamOutput:self type:SCStreamOutputTypeMicrophone sampleHandlerQueue:self->queue error:&addError]) {
+                                            [self fail:[self describeError:addError]]; return;
+                                        }
+                                    }
+                                }
+                                self->starting = YES;
                 [self->stream startCaptureWithCompletionHandler:^(NSError *startError) {
                     dispatch_async(self->queue, ^{
                         self->starting = NO;
@@ -224,7 +268,9 @@ API_AVAILABLE(macos(13.0))
 }
 - (void)stream:(SCStream *)sender didOutputSampleBuffer:(CMSampleBufferRef)sample ofType:(SCStreamOutputType)type {
     (void)sender;
-    if (type != SCStreamOutputTypeAudio || stopping) return;
+    BOOL microphone = NO;
+        if (@available(macOS 15.0, *)) { microphone = type == SCStreamOutputTypeMicrophone; }
+        if ((type != SCStreamOutputTypeAudio && !microphone) || stopping) return;
     @autoreleasepool {
         if (!CMSampleBufferIsValid(sample) || !CMSampleBufferDataIsReady(sample)) return;
         CMItemCount frames = CMSampleBufferGetNumSamples(sample);
@@ -240,7 +286,13 @@ API_AVAILABLE(macos(13.0))
         pcm.frameLength = (AVAudioFrameCount)frames;
         OSStatus status = CMSampleBufferCopyPCMDataIntoAudioBufferList(sample, 0, (int32_t)frames, pcm.mutableAudioBufferList);
         if (status != noErr) { [self fail:[NSString stringWithFormat:@"Copying native audio failed (OSStatus %d).", (int)status]]; return; }
-        if (![sourceFormat isEqual:format]) {
+        // Callbacks share one serial queue, but each input needs independent
+                // resampler history. Temporarily select the microphone converter.
+                AVAudioConverter *systemConverter = converter;
+                AVAudioFormat *systemSourceFormat = sourceFormat;
+                if (microphone) { converter = micConverter; sourceFormat = micSourceFormat; }
+                processingMicrophone = microphone;
+                if (![sourceFormat isEqual:format]) {
             if (![self convert:nil]) return;
             converter = [[AVAudioConverter alloc] initFromFormat:format toFormat:outputFormat];
             if (!converter) { [self fail:@"Cannot convert native audio to 16000 Hz mono float32."]; return; }
@@ -249,18 +301,47 @@ API_AVAILABLE(macos(13.0))
             sourceFormat = format;
         }
         [self convert:pcm];
+                if (microphone) {
+                    micConverter = converter; micSourceFormat = sourceFormat;
+                    converter = systemConverter; sourceFormat = systemSourceFormat;
+                }
+                processingMicrophone = NO;
     }
 }
 @end
 
-vt_audio_capture vt_audio_start(char *error, size_t capacity) {
+vt_audio_capture vt_audio_start(int include_microphone, char *error, size_t capacity) {
     @autoreleasepool {
         if ([NSThread isMainThread]) {
             VTErrorCopy(@"Start system audio on a worker goroutine; the macOS main thread must remain free.", error, capacity);
             return NULL;
         }
         if (@available(macOS 13.0, *)) {
-            VTAudioCapture *capture = [VTAudioCapture new];
+            if (include_microphone) {
+                            if (@available(macOS 15.0, *)) {} else {
+                                VTErrorCopy(@"Including microphone requires macOS 15 or newer.", error, capacity); return NULL;
+                            }
+                            AVAuthorizationStatus authorization = [AVCaptureDevice authorizationStatusForMediaType:AVMediaTypeAudio];
+                            if (authorization == AVAuthorizationStatusNotDetermined) {
+                                // A bundle must declare its purpose before requesting TCC access.
+                                if (![[NSBundle mainBundle] objectForInfoDictionaryKey:@"NSMicrophoneUsageDescription"]) {
+                                    VTErrorCopy(@"Use the bundled app to grant microphone access, or grant your launching terminal Microphone permission in System Settings.", error, capacity); return NULL;
+                                }
+                                dispatch_semaphore_t permission = dispatch_semaphore_create(0);
+                                [AVCaptureDevice requestAccessForMediaType:AVMediaTypeAudio completionHandler:^(BOOL granted) {
+                                    dispatch_semaphore_signal(permission);
+                                }];
+                                if (dispatch_semaphore_wait(permission, dispatch_time(DISPATCH_TIME_NOW, 60 * NSEC_PER_SEC)) != 0) {
+                                    VTErrorCopy(@"Microphone permission request timed out.", error, capacity); return NULL;
+                                }
+                                authorization = [AVCaptureDevice authorizationStatusForMediaType:AVMediaTypeAudio];
+                            }
+                            if (authorization != AVAuthorizationStatusAuthorized) {
+                                VTErrorCopy(@"Enable Microphone permission for this app or its launching terminal in System Settings > Privacy & Security > Microphone, then relaunch.", error, capacity); return NULL;
+                            }
+                        }
+                        VTAudioCapture *capture = [VTAudioCapture new];
+                        capture->includeMicrophone = include_microphone != 0;
             [capture begin];
             pthread_mutex_lock(&capture->mutex);
             while (!capture->ready && !capture->done && !capture->failure)

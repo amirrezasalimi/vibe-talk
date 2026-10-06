@@ -23,6 +23,7 @@ const whistleOutputCapacity = 262144
 // The caller serializes whole sessions, including initialization and Flush:
 // Needle has process-global, non-thread-safe streaming state.
 type whistleEngine struct {
+	output    []byte
 	handle    uintptr
 	model     []byte // mmap-backed: native code may retain this address indefinitely.
 	load      func(uintptr, uint64) int32
@@ -187,7 +188,7 @@ func (e *whistleEngine) Process(samples []float32, language string) (Event, erro
 		languageBytes = append([]byte(language), 0)
 		languagePointer = uintptr(unsafe.Pointer(&languageBytes[0]))
 	}
-	out := make([]byte, whistleOutputCapacity)
+	out := e.outputBuffer()
 	result := e.process(uintptr(unsafe.Pointer(&samples[0])), int32(len(samples)), languagePointer, 0,
 		uintptr(unsafe.Pointer(&out[0])), int32(len(out)))
 	runtime.KeepAlive(samples)
@@ -199,8 +200,15 @@ func (e *whistleEngine) Process(samples []float32, language string) (Event, erro
 	return decodeWhistleEvent(out)
 }
 
+func (e *whistleEngine) outputBuffer() []byte {
+	if e.output == nil {
+		e.output = make([]byte, whistleOutputCapacity)
+	}
+	return e.output
+}
+
 func (e *whistleEngine) Flush() (Event, error) {
-	out := make([]byte, whistleOutputCapacity)
+	out := e.outputBuffer()
 	result := e.stop(uintptr(unsafe.Pointer(&out[0])), int32(len(out)))
 	runtime.KeepAlive(out)
 	if result < 0 {

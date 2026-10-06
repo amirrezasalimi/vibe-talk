@@ -43,8 +43,10 @@ func TestView(t *testing.T) {
 	if !tt.HasText("Status: Ready") {
 		t.Fatal(tt.Texts())
 	}
+	click("Audio settings")
 	click("Source language")
 	tt.Type("fr")
+	click("Audio settings")
 	click("Start listening")
 	if w.starts != 1 || w.language != "fr" || !a.running {
 		t.Fatalf("worker: %+v", w)

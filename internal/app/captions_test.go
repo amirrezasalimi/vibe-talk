@@ -79,6 +79,36 @@ func TestCloseOverlayKeepsListening(t *testing.T) {
 	}
 }
 
+func TestTranscriptListBuildsOnlyVisibleRows(t *testing.T) {
+	a := &app{}
+	for range 10000 {
+		a.lines = append(a.lines, captionLine{Text: "History caption", At: "00:01"})
+	}
+	tt := ui.NewTester(a.view, 840, 680)
+	visible := 0
+	for _, text := range tt.Texts() {
+		if text == "History caption" {
+			visible++
+		}
+	}
+	if visible == 0 || visible > 100 {
+		t.Fatalf("built %d of 10000 caption rows", visible)
+	}
+}
+
+func BenchmarkTranscriptHistoryView(b *testing.B) {
+	a := &app{}
+	for range 10000 {
+		a.lines = append(a.lines, captionLine{Text: "History caption", At: "00:01"})
+	}
+	tt := ui.NewTester(a.view, 840, 680)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for range b.N {
+		tt.Frame()
+	}
+}
+
 func TestOverlayPreview(t *testing.T) {
 	preview := overlayPreview(strings.Repeat("é", 140))
 	if len([]rune(preview)) != 121 || !strings.HasPrefix(preview, "…") {

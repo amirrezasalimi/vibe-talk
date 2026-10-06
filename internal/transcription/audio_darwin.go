@@ -3,9 +3,11 @@
 package transcription
 
 /*
-#cgo CFLAGS: -fobjc-arc -mmacosx-version-min=13.0
-#cgo LDFLAGS: -mmacosx-version-min=13.0 -framework Foundation -framework AVFoundation -framework CoreMedia -framework CoreGraphics -framework ScreenCaptureKit
+#cgo CFLAGS: -fobjc-arc
+#cgo LDFLAGS: -framework AppKit -framework Foundation -framework AVFoundation -framework CoreMedia -framework CoreGraphics -framework ScreenCaptureKit
 #include "audio_native.h"
+#include <stdint.h>
+void vt_configure_caption_overlay(uintptr_t handle);
 */
 import "C"
 
@@ -17,6 +19,12 @@ import (
 	"unsafe"
 )
 
+// ConfigureCaptionOverlay configures a borrowed NSWindow on the main thread.
+// Keeping native bridges in one cgo package avoids duplicate Objective-C linkage.
+func ConfigureCaptionOverlay(handle uintptr) {
+	C.vt_configure_caption_overlay(C.uintptr_t(handle))
+}
+
 // The handle remains owned until collection, not Close: readers must be able to
 // drain final PCM after Close, including a Read already blocked in native code.
 type nativeAudioCapture struct {
@@ -27,8 +35,16 @@ type nativeAudioCapture struct {
 
 // Call from a worker goroutine while the application's main event loop is free.
 func startSystemAudio() (audioCapture, error) {
+	return startAudio(false)
+}
+
+func startAudio(includeMicrophone bool) (audioCapture, error) {
+	var microphone C.int
+	if includeMicrophone {
+		microphone = 1
+	}
 	var message [2048]C.char
-	handle := C.vt_audio_start(&message[0], C.size_t(len(message)))
+	handle := C.vt_audio_start(microphone, &message[0], C.size_t(len(message)))
 	if handle == nil {
 		return nil, errors.New(C.GoString(&message[0]))
 	}

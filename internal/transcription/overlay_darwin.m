@@ -3,12 +3,31 @@
 #import <AppKit/AppKit.h>
 #include <stdint.h>
 
+// Native input views bypass renderer hit testing and accept the first click
+// while the overlay is inactive. Keep the close button outside the drag region.
+@interface VTCaptionDragHandle : NSView
+@end
+
+@implementation VTCaptionDragHandle
+- (BOOL)isOpaque { return NO; }
+- (BOOL)acceptsFirstMouse:(NSEvent *)event { return YES; }
+- (BOOL)mouseDownCanMoveWindow { return NO; }
+- (void)resetCursorRects {
+    [self addCursorRect:self.bounds cursor:[NSCursor openHandCursor]];
+}
+- (void)mouseDown:(NSEvent *)event {
+    [self.window performWindowDragWithEvent:event];
+}
+@end
+
 // A native grip tracks pointer dragging without fighting the UI renderer.
 @interface VTCaptionResizeGrip : NSView
 @end
 
 @implementation VTCaptionResizeGrip
 - (BOOL)isOpaque { return NO; }
+- (BOOL)acceptsFirstMouse:(NSEvent *)event { return YES; }
+- (BOOL)mouseDownCanMoveWindow { return NO; }
 - (void)resetCursorRects {
     [self addCursorRect:self.bounds cursor:[NSCursor crosshairCursor]];
 }
@@ -49,17 +68,25 @@ void vt_configure_caption_overlay(uintptr_t handle) {
     window.collectionBehavior |= NSWindowCollectionBehaviorCanJoinAllSpaces |
                                  NSWindowCollectionBehaviorFullScreenAuxiliary;
     window.level = NSFloatingWindowLevel;
-    window.movableByWindowBackground = YES;
+    window.movableByWindowBackground = NO;
     window.hidesOnDeactivate = NO;
-        window.styleMask |= NSWindowStyleMaskResizable;
-        NSView *content = window.contentView;
-        VTCaptionResizeGrip *grip = [[VTCaptionResizeGrip alloc]
-            initWithFrame:NSMakeRect(NSWidth(content.bounds) - 30, 8, 22, 22)];
-        grip.autoresizingMask = NSViewMinXMargin | NSViewMaxYMargin;
-        [content addSubview:grip positioned:NSWindowAbove relativeTo:nil];
-    #if !__has_feature(objc_arc)
-        [grip release];
-    #endif
+    window.styleMask |= NSWindowStyleMaskResizable;
+    NSView *content = window.contentView;
+    BOOL flipped = content.isFlipped;
+    CGFloat headerY = flipped ? 26 : NSHeight(content.bounds) - 70;
+    VTCaptionDragHandle *drag = [[VTCaptionDragHandle alloc]
+        initWithFrame:NSMakeRect(26, headerY, MAX(0, NSWidth(content.bounds) - 190), 44)];
+    drag.autoresizingMask = NSViewWidthSizable | (flipped ? NSViewMaxYMargin : NSViewMinYMargin);
+    [content addSubview:drag positioned:NSWindowAbove relativeTo:nil];
+    VTCaptionResizeGrip *grip = [[VTCaptionResizeGrip alloc]
+        initWithFrame:NSMakeRect(NSWidth(content.bounds) - 30,
+            flipped ? NSHeight(content.bounds) - 30 : 8, 22, 22)];
+    grip.autoresizingMask = NSViewMinXMargin | (flipped ? NSViewMinYMargin : NSViewMaxYMargin);
+    [content addSubview:grip positioned:NSWindowAbove relativeTo:nil];
+#if !__has_feature(objc_arc)
+    [drag release];
+    [grip release];
+#endif
     // Showing uses MyGo's ShowInactive, rather than making this window key or
     // activating the app. Fullscreen/exclusive presentation can still obscure it.
 }

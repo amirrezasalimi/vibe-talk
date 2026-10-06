@@ -1,10 +1,11 @@
 package app
 
 import (
-	"math"
+	"context"
 	"strings"
 	"time"
 	"vibe-talk/internal/transcription"
+	"vibe-talk/internal/translation"
 
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
@@ -18,17 +19,31 @@ type workerController interface {
 // All app state is main-thread owned. The worker only invokes callbacks that
 // dispatch state mutations through Window.Update (a deterministic queue in tests).
 type app struct {
-	language, committed, pending, detected, status, errorText string
-	passMS                                                    float64
-	hasMetric, running, stopping, closing                     bool
-	scroll                                                    ui.ScrollState
-	worker                                                    workerController
-	dispatch                                                  func(func())
-	closeWindow                                               func()
-	lines                                                     []captionLine
-	sessionStarted                                            time.Time
-	overlayEnabled, clickThrough                              bool
-	overlay                                                   *captionOverlay
+	translationConfig                                                     translation.Config
+	translator                                                            *translation.Client
+	translateEnabled, translationSettings, captureSettings, loadingModels bool
+	models                                                                []string
+	translationError                                                      string
+	translationCancel                                                     context.CancelFunc
+	translationContext                                                    context.Context
+	translationSlots                                                      chan struct{}
+	translationGeneration                                                 uint64
+	nextLineID                                                            uint64
+	modelCancel                                                           context.CancelFunc
+	language, committed, pending, detected, status, errorText             string
+	passMS                                                                float64
+	hasMetric, running, stopping, closing                                 bool
+	transcriptList                                                        ui.ListState
+	lowCPU                                                                bool
+	includeMicrophone, noiseFilter                                        bool
+	noiseFloorDB                                                          float64
+	worker                                                                workerController
+	dispatch                                                              func(func())
+	closeWindow                                                           func()
+	lines                                                                 []captionLine
+	sessionStarted                                                        time.Time
+	overlayEnabled, clickThrough                                          bool
+	overlay                                                               *captionOverlay
 }
 
 func (a *app) start() {
@@ -44,6 +59,19 @@ func (a *app) start() {
 	a.sessionStarted = time.Now()
 	a.errorText, a.status, a.pending = "", "Starting…", ""
 	a.detected, a.hasMetric = "", false
+	if configurable, ok := a.worker.(interface{ SetLowCPU(bool) }); ok {
+		configurable.SetLowCPU(a.lowCPU)
+	}
+	if configurable, ok := a.worker.(interface{ SetInputOptions(bool, float64) }); ok {
+		floor := 0.0
+		if a.noiseFilter {
+			floor = a.noiseFloorDB
+			if floor == 0 {
+				floor = -45
+			}
+		}
+		configurable.SetInputOptions(a.includeMicrophone, floor)
+	}
 	err = a.worker.Start(language, func(e transcription.Event) {
 		a.dispatch(func() { a.apply(e) })
 	}, func(err error) {
@@ -80,6 +108,10 @@ func (a *app) stop() {
 
 func (a *app) requestClose() bool {
 	a.closing = true
+	a.cancelTranslation()
+	if a.modelCancel != nil {
+		a.modelCancel()
+	}
 	if !a.running {
 		return true
 	}
@@ -88,16 +120,17 @@ func (a *app) requestClose() bool {
 }
 
 func (a *app) apply(e transcription.Event) {
-	defer a.refreshOverlay()
+	visibleChange := e.Type != "transcript" || e.Text != "" || e.Pending != a.pending
+	if visibleChange {
+		defer a.refreshOverlay()
+	}
 	switch e.Type {
 	case "status":
 		if !a.stopping {
 			a.status = e.Message
 		}
 	case "transcript":
-		if a.scroll.Y >= a.scroll.MaxY {
-			a.scroll.Y = math.MaxFloat32
-		}
+
 		// Text is a delta, not a replacement or cumulative transcript.
 		if a.committed != "" && e.Text != "" && strings.TrimRight(a.committed, " \n\t") == a.committed && strings.TrimLeft(e.Text, " \n\t") == e.Text {
 			a.committed += " "
@@ -118,15 +151,19 @@ func (a *app) apply(e transcription.Event) {
 func (a *app) clear() {
 	a.committed, a.pending = "", ""
 	a.lines = nil
+	a.cancelTranslation()
+	if a.translateEnabled {
+		a.beginTranslation()
+	}
 	a.refreshOverlay()
-	a.scroll = ui.ScrollState{}
+	a.transcriptList = ui.ListState{FollowEnd: true}
 }
 
 func Run() error {
-	a := &app{worker: &transcription.Worker{}}
+	a := &app{worker: &transcription.Worker{}, translator: translation.NewClient(), translationConfig: translation.Config{BaseURL: "https://api.openai.com/v1", Target: "English"}}
 	mygo.App.WhenReady(func() {
 		win := mygo.NewWindow(mygo.WindowOptions{
-			Title: "vibe-talk", Width: 840, Height: 680, MinWidth: 680, MinHeight: 580,
+			Title: "vibe-talk", Width: 720, Height: 620, MinWidth: 600, MinHeight: 480,
 			StateKey: "main", Content: ui.View(a.view),
 		})
 		a.overlay = newCaptionOverlay(a.overlayView)

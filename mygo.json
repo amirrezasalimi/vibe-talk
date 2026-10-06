@@ -2,5 +2,8 @@
   "name": "vibe-talk",
   "identifier": "com.example.vibetalk",
   "version": "0.1.0",
-  "out": "build"
+  "out": "build",
+    "infoPlist": {
+      "NSMicrophoneUsageDescription": "Include your microphone in local live captions when you enable microphone input."
+    }
 }

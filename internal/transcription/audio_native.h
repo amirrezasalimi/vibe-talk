@@ -5,7 +5,7 @@
 
 // Opaque retained Objective-C capture. No callbacks cross into Go.
 typedef void *vt_audio_capture;
-vt_audio_capture vt_audio_start(char *error, size_t error_capacity);
+vt_audio_capture vt_audio_start(int include_microphone, char *error, size_t error_capacity);
 // Positive: samples copied; zero: drained EOF; negative: drained failure.
 ptrdiff_t vt_audio_read(vt_audio_capture capture, float *samples, size_t capacity,
                         char *error, size_t error_capacity);
