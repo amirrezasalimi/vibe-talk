@@ -19,10 +19,11 @@ type workerController interface {
 // All app state is main-thread owned. The worker only invokes callbacks that
 // dispatch state mutations through Window.Update (a deterministic queue in tests).
 type app struct {
-	translationConfig                                                     translation.Config
+	profiles                                                              []TranslationProfile
+	activeProfileID                                                       string
+	modelsByProfile                                                       map[string][]string
 	translator                                                            *translation.Client
 	translateEnabled, translationSettings, captureSettings, loadingModels bool
-	models                                                                []string
 	translationError                                                      string
 	translationCancel                                                     context.CancelFunc
 	translationContext                                                    context.Context
@@ -44,6 +45,8 @@ type app struct {
 	sessionStarted                                                        time.Time
 	overlayEnabled, clickThrough                                          bool
 	overlay                                                               *captionOverlay
+	newProfileName                                                        string
+	confirmDeleteProfile                                                  bool
 }
 
 func (a *app) start() {
@@ -159,14 +162,32 @@ func (a *app) clear() {
 	a.transcriptList = ui.ListState{FollowEnd: true}
 }
 
+func newApp() *app {
+	cfg := LoadConfig()
+	a := &app{
+		worker:          &transcription.Worker{},
+		translator:      translation.NewClient(),
+		modelsByProfile: map[string][]string{},
+	}
+	a.applyConfig(cfg)
+	// Backfill cached models map from nothing; discovery repopulates.
+	if a.modelsByProfile == nil {
+		a.modelsByProfile = map[string][]string{}
+	}
+	return a
+}
+
 func Run() error {
-	a := &app{worker: &transcription.Worker{}, translator: translation.NewClient(), translationConfig: translation.Config{BaseURL: "https://api.openai.com/v1", Target: "English"}}
+	a := newApp()
 	mygo.App.WhenReady(func() {
 		win := mygo.NewWindow(mygo.WindowOptions{
-			Title: "vibe-talk", Width: 720, Height: 620, MinWidth: 600, MinHeight: 480,
+			Title: "vibe-talk", Width: 780, Height: 700, MinWidth: 640, MinHeight: 520,
 			StateKey: "main", Content: ui.View(a.view),
 		})
 		a.overlay = newCaptionOverlay(a.overlayView)
+		if a.clickThrough {
+			a.overlay.SetClickThrough(true)
+		}
 		a.dispatch = win.Update
 		a.closeWindow = win.Close
 		win.OnClose(func(e *mygo.CloseEvent) {

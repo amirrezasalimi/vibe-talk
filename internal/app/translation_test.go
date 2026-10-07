@@ -1,13 +1,20 @@
 package app
 
 import (
-	"github.com/egoist/mygo/ui"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
 	"vibe-talk/internal/translation"
+
+	"github.com/egoist/mygo/ui"
 )
+
+func testProfile(baseURL, model string) []TranslationProfile {
+	return []TranslationProfile{{
+		ID: "test", Name: "Test", BaseURL: baseURL, Model: model, Target: "French",
+	}}
+}
 
 func TestTranslationRowsAndClear(t *testing.T) {
 	started, release := make(chan struct{}, 1), make(chan struct{})
@@ -19,8 +26,8 @@ func TestTranslationRowsAndClear(t *testing.T) {
 	defer server.Close()
 	callbacks := make(chan func(), 4)
 	a := &app{translator: translation.NewClient(), translateEnabled: true,
-		translationConfig: translation.Config{BaseURL: server.URL, Model: "test", Target: "French"},
-		dispatch:          func(f func()) { callbacks <- f }}
+		profiles: testProfile(server.URL, "test"), activeProfileID: "test",
+		dispatch: func(f func()) { callbacks <- f }}
 	a.appendCaption("Hello")
 	select {
 	case <-started:
@@ -47,7 +54,11 @@ func TestTranslationRowsAndClear(t *testing.T) {
 }
 
 func TestCompactTranslationSettings(t *testing.T) {
-	a := &app{translationConfig: translation.Config{BaseURL: "https://api.openai.com/v1", Target: "French"}, models: []string{"fast-model", "other-model"}}
+	a := &app{
+		profiles:        testProfile("https://api.openai.com/v1", ""),
+		activeProfileID: "test",
+		modelsByProfile: map[string][]string{"test": {"fast-model", "other-model"}},
+	}
 	tt := ui.NewTester(a.view, 720, 620)
 	if tt.HasText("API base URL (include /v1)") {
 		t.Fatal("settings should start collapsed")
@@ -63,5 +74,26 @@ func TestCompactTranslationSettings(t *testing.T) {
 	}
 	if a.translateEnabled || a.translationError == "" {
 		t.Fatal("invalid configuration accepted")
+	}
+}
+
+func TestMultipleProfilesPersistActive(t *testing.T) {
+	a := &app{
+		profiles: []TranslationProfile{
+			{ID: "a", Name: "Alpha", BaseURL: "https://api.openai.com/v1", Model: "m1", Target: "French"},
+			{ID: "b", Name: "Beta", BaseURL: "http://localhost:11434/v1", Model: "m2", Target: "German"},
+		},
+		activeProfileID: "a",
+	}
+	if cfg := a.activeTranslationConfig(); cfg.Model != "m1" || cfg.Target != "French" {
+		t.Fatalf("active profile wrong: %+v", cfg)
+	}
+	a.activeProfileID = "b"
+	if cfg := a.activeTranslationConfig(); cfg.BaseURL != "http://localhost:11434/v1" {
+		t.Fatalf("switch failed: %+v", cfg)
+	}
+	snap := a.snapshot()
+	if len(snap.Profiles) != 2 || snap.ActiveProfileID != "b" {
+		t.Fatalf("snapshot lost profiles: %+v", snap)
 	}
 }

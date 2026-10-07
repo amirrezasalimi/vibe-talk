@@ -19,11 +19,15 @@ Languages: English `en`, German `de`, French `fr`, Spanish `es`, Italian `it`, D
 
 ## Auto-translation (optional)
 
-Open **Translation settings**, enter your OpenAI-compatible **API base URL** (including `/v1` where required) and API key, then click **Load models**. The model field supports autocomplete with keyboard arrows/Enter, or a manually entered model ID for providers without a models endpoint. Set **Translate into** (for example, French) and enable **Auto-translate new lines**. Disable translation to edit its configuration. Model discovery allows 60 seconds for routers that aggregate provider lists; live translation retains its separate 20-second timeout.
+Open **Translation settings** to manage **multiple OpenAI-compatible endpoints** (profiles). Pick the active profile from the dropdown, **Add** new ones with the plus button, rename them inline, and remove the active one with the trash button (click twice to confirm). Per profile, enter the **API base URL** (including `/v1` where required) and API key, then click **Load models**. The model field supports autocomplete with keyboard arrows/Enter, or a manually entered model ID for providers without a models endpoint. Set **Translate into** (for example, French) and enable **Auto-translate new lines**. Disable translation to edit its configuration. Model discovery allows 60 seconds for routers that aggregate provider lists; live translation retains its separate 20-second timeout. Each profile keeps its own cached model list.
 
 Each new confirmed caption segment is translated asynchronously and displayed beneath its original text, including in the overlay. Provisional text is not sent. Capture never waits for the API; up to three requests run concurrently with a 20-second timeout. If the endpoint cannot keep up, additional rows show a busy/skipped message instead of accumulating an unbounded queue. Errors appear on the affected row. Turning translation off, clearing captions, or closing cancels pending translations; old responses cannot attach to new rows. Translation speed depends on your provider/model/network, not Whistle's inference timing. Existing history is not automatically translated.
 
-Transcription remains on-device. **Enabling translation sends confirmed caption text to your chosen server**, which may retain it and charge per request. Use a local OpenAI-compatible server to keep translation local as well. Remote endpoints require HTTPS; HTTP is accepted for localhost only. Credentials are not forwarded on redirects or written to disk. Configuration and the masked API key are session-only and must be reentered after restart. No Python is involved.
+Transcription remains on-device. **Enabling translation sends confirmed caption text to your chosen server**, which may retain it and charge per request. Use a local OpenAI-compatible server to keep translation local as well. Remote endpoints require HTTPS; HTTP is accepted for localhost only. Credentials are not forwarded on redirects. No Python is involved.
+
+## Saved configuration
+
+Settings persist as YAML in **`~/.vibe-talk/config.yaml`** (`$VIBE_TALK_CONFIG` overrides the path): source language, CPU/mic/noise options, click-through, translation on/off, the active profile, and every translation profile (name, base URL, API key, model, target). The file is written with `0600` permissions since it holds API keys, and includes a header noting that. Delete the file (or the active profile) to start fresh; a missing or corrupt file falls back to OpenAI defaults.
 
 The compact main window keeps **Audio settings** and **Translation settings** collapsed by default so captions have more room. Open Audio settings to change language, microphone, CPU mode or noise cutoff.
 
@@ -50,14 +54,18 @@ On macOS the overlay joins all Spaces and is configured as a full-screen auxilia
 ```text
 main.go                        Application entry point (go run .)
 internal/
-  app/                         UI state, captions, overlay and UI tests
+  app/                         UI state, captions, overlay, design system (design.go),
+                               lucide icons (icons.go), YAML config (config.go) and UI tests
   transcription/               Native audio/overlay bridges, Whistle, sessions and tests
   translation/                 OpenAI-compatible HTTP client and API tests
 resources/                     Bundled app resources (icon)
 runtime/                       Generated engine library and model weights
 scripts/                       Native asset setup
 .cache/whistle/                Regenerable setup-only static library cache
+~/.vibe-talk/config.yaml       Persisted settings + translation profiles (0600)
 ```
+
+The main window follows one design system (`internal/app/design.go`: cards, section headers, status pills, toggle rows, error/note banners) with lucide-style stroke icons (`internal/app/icons.go`) on every action and section. Transport controls stay mounted with stable labels; Audio/Translation panels are collapsed by default so captions keep the room.
 
 Go and Objective-C bridge files stay together in their owning package so cgo compiles them correctly. Tests live beside the code they exercise. `internal/app` depends on `internal/transcription`, not the reverse. Generated runtime assets and caches are ignored by Git.
 
